@@ -1,0 +1,39 @@
+version: "3.8"
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Docker/Dockerfile  # Specify the correct path to your Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=host.docker.internal  # Use this for local MySQL (Windows/macOS)
+      - DB_PORT=3306
+      - DB_USER=root                   # Change if needed
+      - DB_PASSWORD=yourpassword        # Change if needed
+      - DB_NAME=yourdatabase            # Change if needed
+    volumes:
+      - .:/app
+      - /app/node_modules
+    restart: unless-stopped
+    depends_on:
+      - mysql
+
+  mysql:
+    image: mysql:8.0
+    container_name: mysql-container
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: yourpassword
+      MYSQL_DATABASE: yourdatabase
+      MYSQL_USER: youruser
+      MYSQL_PASSWORD: yourpassword
+    volumes:
+      - mysql_data:/var/lib/mysql
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
