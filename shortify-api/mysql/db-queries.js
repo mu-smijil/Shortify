@@ -110,4 +110,73 @@ const createAnalaticsEntry = async (shortUrl, userId, os, deviceType) => {
     });
 };
 
-module.exports = { getUser, createUser, fetchURL, createShortURLEntry, createAnalaticsEntry };
+const recordClick = async (shortUrl, userId, os, deviceType, ipAddress) => {
+    return new Promise((resolve, reject) => {
+        db.query(
+            `INSERT INTO link_clicks (shortUrl, userId, os, deviceType, ipAddress)
+             VALUES (?, ?, ?, ?, ?)`,
+            [shortUrl, userId, os, deviceType, ipAddress],
+            (err, result) => {
+                if (err) {
+                    console.error("Error recording click:", err);
+                    reject(err);
+                }
+                resolve(result);
+            }
+        );
+    });
+};
+
+const getClickStats = async (shortUrl) => {
+    return new Promise((resolve, reject) => {
+        Promise.all([
+            new Promise((resolve, reject) => {
+                db.query(
+                    'SELECT COUNT(*) as total FROM link_clicks WHERE shortUrl = ?',
+                    [shortUrl],
+                    (err, results) => {
+                        if (err) {
+                            reject(err);
+                            return;
+                        }
+                        resolve(results[0]);
+                    }
+                );
+            }),
+            new Promise((resolve, reject) => {
+                db.query(
+                    `SELECT 
+                        COUNT(DISTINCT CASE WHEN userId IS NOT NULL THEN userId ELSE ipAddress END) as unique_count
+                     FROM link_clicks
+                     WHERE shortUrl = ?`,
+                    [shortUrl],
+                    (err, results) => {
+                        if (err) {
+                            reject(err);
+                            return;
+                        }
+                        resolve(results[0]);
+                    }
+                );
+            })
+        ]).then(([totalResult, uniqueResult]) => {
+            resolve({
+                totalClicks: totalResult.total,
+                uniqueClicks: uniqueResult.unique_count
+            });
+        }).catch(err => {
+            console.error("Error getting click stats:", err);
+            reject(err);
+        });
+    });
+};
+
+module.exports = { 
+    getUser, 
+    createUser, 
+    fetchURL, 
+    createShortURLEntry, 
+    createAnalaticsEntry, 
+    recordClick, 
+    getClickStats 
+};

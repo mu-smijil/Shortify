@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const passport = require("passport");
 const rateLimit = require("express-rate-limit");
-const { fetchURL, createShortURLEntry, createAnalaticsEntry } = require('../mysql/db-queries');
+const { fetchURL, createShortURLEntry, createAnalaticsEntry, recordClick, getClickStats } = require('../mysql/db-queries');
 const shortenUrl = require("../functions/shorten-url");
 const timeStamp = require('../functions/get-timestamp');
 const UAParser = require("ua-parser-js");
@@ -92,17 +92,23 @@ router.post("/api/shorten", shortUrlRateLimiter, async(req, res) => {
     // Get user ID if authenticated
     let userId = null;
     if (req.isAuthenticated() && req.user) {
-      userId = req.user.googleId; // Make sure this matches your user object structure
+      userId = req.user.googleId; // Use googleID as requested
     }
     
     // Create the short URL entry
     await createShortURLEntry(longurl, shortUrl, customalias, userId, topic);
-    await createAnalaticsEntry(shortUrl,userId,os,deviceType)
+    await createAnalaticsEntry(shortUrl, userId, os, deviceType);
+    
+    // Get click statistics for this URL (will be 0 for new URLs)
+    const clickStats = await getClickStats(shortUrl);
+    
     res.json({
       message: "Short URL created successfully",
       shortUrl,
       longurl,
       CreatedAt: time,
+      totalClicks: clickStats.totalClicks,
+      uniqueClicks: clickStats.uniqueClicks
     });
   } catch (error) {
     console.error("Error creating short URL:", error);
@@ -125,10 +131,39 @@ router.get('/api/shorten', async (req, res) => {
     if (!result || result.length === 0) {
       return res.status(404).json({ error: "URL not found" });
     }
+    
+    // Record click before redirecting
+    const userAgent = req.headers["user-agent"];
+    const os = detectOS(userAgent);
+    const deviceType = detectDevice(userAgent);
+    const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    
+    // Get user ID if authenticated
+    let userId = null;
+    if (req.isAuthenticated() && req.user) {
+      userId = req.user.googleId;
+    }
+    
+    // Record the click - don't await to avoid delaying the redirect
+    recordClick(customalias, userId, os, deviceType, ipAddress)
+      .catch(err => console.error("Error recording click:", err));
+    
     res.redirect(result[0].longUrl);
   } catch (error) {
     console.error("Error fetching URL:", error);
     res.status(500).json({ error: "Failed to fetch URL" });
+  }
+});
+
+// New route to get stats for a URL
+router.get('/api/stats/:shortUrl', async (req, res) => {
+  try {
+    const { shortUrl } = req.params;
+    const stats = await getClickStats(shortUrl);
+    res.json(stats);
+  } catch (error) {
+    console.error("Error fetching click stats:", error);
+    res.status(500).json({ error: "Failed to fetch click statistics" });
   }
 });
 
@@ -195,6 +230,24 @@ router.get('/ui/shorten', (req, res) => {
               display: none;
               margin-top: 15px;
             }
+            .stats {
+              margin-top: 10px;
+              padding: 8px;
+              background-color: #e2f0ff;
+              border-radius: 4px;
+            }
+            .refresh-btn {
+              display: inline-block;
+              background-color: #6c757d;
+              color: white;
+              padding: 5px 10px;
+              border-radius: 4px;
+              text-decoration: none;
+              margin-top: 10px;
+              font-size: 12px;
+              cursor: pointer;
+              border: none;
+            }
           </style>
       </head>
       <body>
@@ -252,12 +305,41 @@ router.get('/ui/shorten', (req, res) => {
                 document.getElementById('loading').style.display = 'none';
                 
                 if (response.ok) {
+                  const baseUrl = window.location.origin;
+                  const shortUrlLink = \`\${baseUrl}/api/shorten?customalias=\${data.shortUrl}\`;
+                  
                   document.getElementById('result').innerHTML = 
                     \`<div class="message success">
-                      <p>Short URL created: <a href="\${data.longurl}" target="_blank">\${data.shortUrl}</a></p>
+                      <p>Short URL created: <a href="\${shortUrlLink}" target="_blank">\${data.shortUrl}</a></p>
                       <p>Long URL: \${data.longurl}</p>
                       <p>Created at: \${data.CreatedAt}</p>
+                      <div class="stats" id="url-stats">
+                        <p>Total Clicks: \${data.totalClicks || 0}</p>
+                        <p>Unique Visitors: \${data.uniqueClicks || 0}</p>
+                        <button class="refresh-btn" id="refresh-stats" data-url="\${data.shortUrl}">Refresh Stats</button>
+                      </div>
                      </div>\`;
+                     
+                  // Add click handler for the refresh stats button
+                  document.getElementById('refresh-stats').addEventListener('click', async function() {
+                    const shortUrl = this.getAttribute('data-url');
+                    try {
+                      const statsResponse = await fetch(\`/api/stats/\${shortUrl}\`);
+                      if (statsResponse.ok) {
+                        const statsData = await statsResponse.json();
+                        document.getElementById('url-stats').innerHTML = 
+                          \`<p>Total Clicks: \${statsData.totalClicks}</p>
+                           <p>Unique Visitors: \${statsData.uniqueClicks}</p>
+                           <button class="refresh-btn" id="refresh-stats" data-url="\${shortUrl}">Refresh Stats</button>\`;
+                        
+                        // Re-attach event listener to new button
+                        document.getElementById('refresh-stats').addEventListener('click', arguments.callee);
+                      }
+                    } catch (error) {
+                      console.error("Error fetching stats:", error);
+                    }
+                  });
+                     
                   document.getElementById('shortenForm').reset();
                 } else {
                   document.getElementById('result').innerHTML = 
